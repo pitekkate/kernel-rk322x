@@ -1,8 +1,3 @@
-#==========================================================================
-# Description: Compile rockchip rk322x kernel
-# Copyright (C) 2023 https://github.com/ophub/kernel
-#==========================================================================
-
 name: Compile rockchip rk322x kernel
 
 on:
