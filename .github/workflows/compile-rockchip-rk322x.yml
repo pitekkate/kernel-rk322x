@@ -17,6 +17,7 @@ on:
         options:
           - armbian/linux-rockchip@rockchip/5.10
           - armbian/linux-rockchip@rockchip/6.1
+          - armbian/linux-rockchip@rk-6.1-rkr5.1  # Opsi baru untuk branch rk-6.1-rkr5.1
           - unifreq/linux-5.10.y-rk35xx@main
           - unifreq/linux-6.1.y-rockchip@main
           - ophub/kernel@main
@@ -363,6 +364,7 @@ jobs:
             #### Supported Sources:
             - Armbian: `armbian/linux-rockchip@rockchip/5.10`
             - Armbian: `armbian/linux-rockchip@rockchip/6.1`
+            - Armbian: `armbian/linux-rockchip@rk-6.1-rkr5.1`
             - Unifreq: `unifreq/linux-5.10.y-rk35xx@main`
             - Unifreq: `unifreq/linux-6.1.y-rockchip@main`
             - Ophub: `ophub/kernel@main`
