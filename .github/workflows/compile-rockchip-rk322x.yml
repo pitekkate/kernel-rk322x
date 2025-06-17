@@ -18,7 +18,7 @@ on:
           - armbian/linux-rockchip@rockchip/5.10
           - armbian/linux-rockchip@rockchip/6.1
           - armbian/linux-rockchip@rk-6.1-rkr5.1
-          - unifreq/linux-5.10.y-rk35xx@main
+          - unifreq/linux-5.10.y-rockchip@main
           - unifreq/linux-6.1.y-rockchip@main
           - ophub/kernel@main
       kernel_version:
