@@ -1,6 +1,5 @@
 #==========================================================================
-# Description: Compile rockchip rk35xx kernel
-# Copyright (C) 2023 https://github.com/unifreq/linux-5.10.y-rk35xx
+# Description: Compile rockchip rk322x kernel
 # Copyright (C) 2023 https://github.com/ophub/kernel
 #==========================================================================
 
@@ -180,13 +179,13 @@ jobs:
         uses: ncipollo/release-action@main
         if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
         with:
-          tag: kernel_rk35xx
+          tag: kernel_rk322x
           artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
           allowUpdates: true
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
             - The kernel can be used to compile Armbian and OpenWrt.
-            - The kernel source code comes from: unifreq/linux-5.10.y-rk35xx
+            - The kernel source code comes from: armbian/linux-rockchip
             - The kernel compilation toolchain: gcc
             - This is a dedicated kernel for `Rockchip rk322x` and is not compatible with other series.
             - 这是 `Rockchip rk322x` 专用内核，和其他系列不通用。
