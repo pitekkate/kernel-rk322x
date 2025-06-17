@@ -1,0 +1,219 @@
+#==========================================================================
+# Description: Compile rockchip rk322x kernel
+# Copyright (C) 2023 https://github.com/ophub/kernel
+#==========================================================================
+
+name: Compile rockchip rk322x kernel
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      kernel_source:
+        description: "Select the kernel source"
+        required: false
+        default: "armbian/linux-rockchip@rk-5.10-rkr1"
+        type: choice
+        options:
+          - armbian/linux-rockchip@rk-5.10-rkr1
+          - armbian/linux-rockchip@rk-6.1-rkr5.1
+          - ophub/kernel@main
+      kernel_version:
+        description: "Select kernel version"
+        required: false
+        default: "5.10.y"
+        type: choice
+        options:
+          - 5.10.y
+          - 6.1.y
+      kernel_auto:
+        description: "Auto use the latest kernel"
+        required: false
+        default: true
+        type: boolean
+      silent_log:
+        description: "Use silent logging"
+        required: false
+        default: true
+        type: boolean
+      delete_source:
+        description: "Delete the source after compilation"
+        required: false
+        default: true
+        type: boolean
+      kernel_package:
+        description: "Select compile package list"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - dtbs
+      kernel_toolchain:
+        description: "Select the compilation toolchain"
+        required: false
+        default: "gcc"
+        type: choice
+        options:
+          - gcc
+          - gcc-14.2
+      compress_format:
+        description: "Set the initrd compression format"
+        required: false
+        default: "xz"
+        type: choice
+        options:
+          - xz
+          - gzip
+          - zstd
+          - lzma
+      kernel_sign:
+        description: "Set the kernel custom signature"
+        required: false
+        default: "-rk322x-ophub"
+        type: choice
+        options:
+          - -rk322x-ophub
+          - -happy-new-year
+          - -dragon-boat-festival
+          - -mid-autumn-festival
+          - -happy-national-day
+          - -merry-christmas
+          - -spring-plowing
+          - -summer-growing
+          - -autumn-harvesting
+          - -winter-storing
+          - -yourname
+      kernel_config:
+        description: "Set the path of kernel .config"
+        required: false
+        default: "kernel-config/release/rk322x"
+        type: choice
+        options:
+          - kernel-config/release/rk322x
+          - false
+
+env:
+  TZ: America/New_York
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            gcc-arm-linux-gnueabihf \
+            bc \
+            git \
+            wget \
+            kmod \
+            cpio \
+            python3 \
+            rsync \
+            xz-utils
+
+      - name: Prepare RK322x kernel config
+        run: |
+          mkdir -p kernel-config/release/rk322x
+          # Gunakan config yang sudah ada atau download default config
+          if [ ! -f "kernel-config/release/rk322x/config-5.10" ]; then
+            wget https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip-rk322x.config \
+              -O kernel-config/release/rk322x/config-5.10
+          fi
+          if [ ! -f "kernel-config/release/rk322x/config-6.1" ]; then
+            wget https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip-rk322x.config \
+              -O kernel-config/release/rk322x/config-6.1
+          fi
+
+      - name: Compile the kernel [ ${{ inputs.kernel_version }} ]
+        id: compile_kernel
+        run: |
+          # Set environment variables
+          export ARCH=arm
+          export CROSS_COMPILE=arm-linux-gnueabihf-
+          
+          # Clone kernel source
+          KERNEL_SOURCE="${{ inputs.kernel_source }}"
+          if [[ "$KERNEL_SOURCE" == *"@"* ]]; then
+            REPO=${KERNEL_SOURCE%%@*}
+            BRANCH=${KERNEL_SOURCE#*@}
+            git clone --depth=1 --branch=$BRANCH https://github.com/$REPO kernel-source
+          else
+            git clone --depth=1 https://github.com/$KERNEL_SOURCE kernel-source
+          fi
+          
+          cd kernel-source
+          
+          # Apply RK322x specific patches
+          for patch in ../kernel-patch/linux-${{ inputs.kernel_version }}/*.patch; do
+            [ -f "$patch" ] && patch -p1 < "$patch"
+          done
+          
+          # Use RK322x config
+          CONFIG_FILE="../kernel-config/release/rk322x/config-${${{ inputs.kernel_version }}%.y}"
+          if [ -f "$CONFIG_FILE" ]; then
+            cp $CONFIG_FILE .config
+          else
+            make rockchip_defconfig
+          fi
+          
+          # Configure kernel
+          make olddefconfig
+          
+          # Set custom kernel signature
+          sed -i "s|CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"${{ inputs.kernel_sign }}\"|" .config
+          
+          # Build kernel
+          make -j$(nproc) zImage modules dtbs
+          
+          # Install modules
+          make modules_install INSTALL_MOD_PATH=../output
+          
+          # Copy artifacts
+          mkdir -p ../output/boot
+          cp arch/arm/boot/zImage ../output/boot/vmlinuz-${{ inputs.kernel_version }}${{ inputs.kernel_sign }}
+          cp arch/arm/boot/dts/rk322*.dtb ../output/boot/
+          cp System.map ../output/boot/System.map-${{ inputs.kernel_version }}${{ inputs.kernel_sign }}
+          cp .config ../output/boot/config-${{ inputs.kernel_version }}${{ inputs.kernel_sign }}
+          
+          # Create initrd
+          mkdir -p ../output/initrd
+          mkinitramfs -k -o ../output/initrd/uInitrd-${{ inputs.kernel_version }}${{ inputs.kernel_sign }} \
+            -v ${{ inputs.kernel_version }}${{ inputs.kernel_sign }}
+
+      - name: Package artifacts
+        run: |
+          cd output
+          tar -czvf rk322x-kernel-${{ inputs.kernel_version }}.tar.gz boot initrd
+          echo "PACKAGED_OUTPUTPATH=$(pwd)" >> $GITHUB_ENV
+          echo "PACKAGED_STATUS=success" >> $GITHUB_ENV
+
+      - name: Upload Kernel to Release
+        uses: ncipollo/release-action@v1
+        if: ${{ env.PACKAGED_STATUS }} == 'success'
+        with:
+          tag: kernel_rk322x
+          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*.tar.gz
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            - The kernel can be used to compile Armbian and OpenWrt for RK322x devices
+            - The kernel source code comes from: ${{ inputs.kernel_source }}
+            - The kernel compilation toolchain: ${{ inputs.kernel_toolchain }}
+            - Kernel version: ${{ inputs.kernel_version }}
+            - Custom signature: ${{ inputs.kernel_sign }}
+            - This is a dedicated kernel for `Rockchip rk322x` devices
+            - 这是 `Rockchip rk322x` 设备的专用内核
