@@ -127,7 +127,8 @@ jobs:
             rsync \
             xz-utils \
             device-tree-compiler \
-            initramfs-tools
+            initramfs-tools \
+            file
 
       - name: Prepare RK322x kernel config
         run: |
@@ -166,30 +167,61 @@ jobs:
             }
           fi
           
+          # Verify clone success
+          if [ ! -d "kernel-source" ]; then
+            echo "❌ Kernel source clone failed!"
+            exit 1
+          fi
+          
           cd kernel-source
-          KERNEL_VER=$(make kernelversion | cut -d. -f1-2)
-          echo "Detected kernel version: $KERNEL_VER"
-          echo "KERNEL_VERSION=${KERNEL_VER}" >> $GITHUB_ENV
+          
+          # Verify Makefile exists
+          if [ ! -f "Makefile" ]; then
+            echo "❌ Makefile not found in kernel source!"
+            exit 1
+          fi
+          
+          # Detect kernel version
+          if command -v make &> /dev/null; then
+            KERNEL_VER=$(make kernelversion 2>/dev/null | cut -d. -f1-2)
+            if [ -z "$KERNEL_VER" ]; then
+              KERNEL_VER=${{ inputs.kernel_version }}
+              echo "⚠️ Using input kernel version: $KERNEL_VER"
+            else
+              echo "Detected kernel version: $KERNEL_VER"
+            fi
+          else
+            KERNEL_VER=${{ inputs.kernel_version }}
+            echo "⚠️ make not available, using input kernel version: $KERNEL_VER"
+          fi
+          
+          echo "KERNEL_VERSION=$KERNEL_VER" >> $GITHUB_ENV
           cd ..
 
       - name: Apply RK322x patches
         run: |
-          if [ -d "kernel-patch/linux-${{ env.KERNEL_VERSION }}" ]; then
+          if [ -n "${{ env.KERNEL_VERSION }}" ] && [ -d "kernel-patch/linux-${{ env.KERNEL_VERSION }}" ]; then
             cd kernel-source
             
             # Apply common patches
             for patch in ../kernel-patch/linux-${{ env.KERNEL_VERSION }}/*.patch; do
-              [ -f "$patch" ] && patch -p1 < "$patch" || true
+              if [ -f "$patch" ]; then
+                echo "Applying patch: $(basename $patch)"
+                patch -p1 < "$patch" || echo "⚠️ Patch application failed: $(basename $patch)"
+              fi
             done
             
             # Apply RK322x specific patches
             if [ -d "../kernel-patch/linux-${{ env.KERNEL_VERSION }}/rk322x" ]; then
               for patch in ../kernel-patch/linux-${{ env.KERNEL_VERSION }}/rk322x/*.patch; do
-                [ -f "$patch" ] && patch -p1 < "$patch" || true
+                if [ -f "$patch" ]; then
+                  echo "Applying RK322x patch: $(basename $patch)"
+                  patch -p1 < "$patch" || echo "⚠️ RK322x patch application failed: $(basename $patch)"
+                fi
               done
             fi
           else
-            echo "No patches found for kernel ${{ env.KERNEL_VERSION }}"
+            echo "⚠️ No patches found for kernel ${{ env.KERNEL_VERSION }} or KERNEL_VERSION not set"
           fi
 
       - name: Compile the kernel [ ${{ env.KERNEL_VERSION }} ]
@@ -201,20 +233,23 @@ jobs:
           
           cd kernel-source
           
-          # Clean source if requested
-          if [ "${{ inputs.delete_source }}" = "true" ]; then
-            make clean
+          # Clean source only if Makefile exists
+          if [ "${{ inputs.delete_source }}" = "true" ] && [ -f "Makefile" ]; then
+            echo "Cleaning source..."
+            make distclean || make clean || echo "⚠️ Clean failed, continuing anyway"
+          else
+            echo "Skipping clean step"
           fi
           
           # Use RK322x config
           CONFIG_FILE="../kernel-config/release/rk322x/config-${{ env.KERNEL_VERSION }}"
           if [ -f "$CONFIG_FILE" ]; then
-            cp $CONFIG_FILE .config
             echo "Using custom config: $CONFIG_FILE"
+            cp $CONFIG_FILE .config
           else
             # Fallback to rockchip defconfig
+            echo "⚠️ Using default rockchip_defconfig"
             make rockchip_defconfig
-            echo "Using default rockchip_defconfig"
           fi
           
           # Configure kernel
@@ -231,6 +266,17 @@ jobs:
             make -j$(nproc) zImage modules dtbs
           fi
           
+          # Verify build artifacts
+          if [ ! -f "arch/arm/boot/zImage" ]; then
+            echo "❌ Kernel image not found!"
+            exit 1
+          fi
+          
+          if ! ls arch/arm/boot/dts/rk322*.dtb >/dev/null 2>&1; then
+            echo "❌ No RK322X device trees found!"
+            exit 1
+          fi
+          
           # Install modules
           make modules_install INSTALL_MOD_PATH=../output
           
@@ -243,22 +289,30 @@ jobs:
           
           # Create initrd
           mkdir -p ../output/initrd
-          KERNEL_VERSION_FULL=$(make kernelversion)
-          echo "Creating initrd for $KERNEL_VERSION_FULL${{ inputs.kernel_sign }}"
+          KERNEL_VERSION_FULL=$(make kernelversion 2>/dev/null || echo "${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}")
+          echo "Creating initrd for $KERNEL_VERSION_FULL"
           
           # Create temporary initrd directory
           INITRD_TMP_DIR=$(mktemp -d)
           mkdir -p $INITRD_TMP_DIR/{bin,dev,etc,lib,proc,sbin,sys,usr}
-          cp -a /bin/busybox $INITRD_TMP_DIR/bin/
-          ln -s bin/busybox $INITRD_TMP_DIR/init
           
-          # Create basic init script
-          cat > $INITRD_TMP_DIR/init <<'INIT_EOF'
-              #!/bin/sh
-              mount -t proc proc /proc
-              mount -t sysfs sysfs /sys
-              exec /bin/sh
-          INIT_EOF
+          # Copy busybox if available
+          if command -v busybox &> /dev/null; then
+            cp $(which busybox) $INITRD_TMP_DIR/bin/
+          else
+            echo "⚠️ busybox not found, installing..."
+            sudo apt-get install -y busybox-static
+            cp /bin/busybox $INITRD_TMP_DIR/bin/
+          fi
+          
+          # Create init script
+          cat > $INITRD_TMP_DIR/init <<'EOF'
+          #!/bin/sh
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+          exec /bin/sh
+          EOF
+          
           chmod +x $INITRD_TMP_DIR/init
           
           # Build initrd
@@ -267,9 +321,10 @@ jobs:
 
       - name: Package artifacts
         run: |
+          mkdir -p artifacts
           cd output
-          tar -czvf rk322x-kernel-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}.tar.gz boot initrd
-          echo "PACKAGED_OUTPUTPATH=$(pwd)" >> $GITHUB_ENV
+          tar -czvf ../artifacts/rk322x-kernel-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}.tar.gz boot initrd
+          echo "PACKAGED_OUTPUTPATH=artifacts" >> $GITHUB_ENV
           echo "PACKAGED_STATUS=success" >> $GITHUB_ENV
 
       - name: Upload Kernel to Release
