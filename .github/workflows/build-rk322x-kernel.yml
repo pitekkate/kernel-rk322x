@@ -189,4 +189,4 @@ jobs:
             - The kernel source code comes from: unifreq/linux-5.10.y-rk35xx
             - The kernel compilation toolchain: gcc
             - This is a dedicated kernel for `Rockchip rk322x` and is not compatible with other series.
-            - 这是 `Rockchip rk3528/rk3566/rk3568` 专用内核，和其他系列不通用。
+            - 这是 `Rockchip rk322x` 专用内核，和其他系列不通用。
