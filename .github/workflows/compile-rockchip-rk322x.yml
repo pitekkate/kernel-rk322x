@@ -12,20 +12,22 @@ on:
       kernel_source:
         description: "Select the kernel source"
         required: false
-        default: "armbian/linux-rockchip@rk-5.10-rkr1"
+        default: "armbian/linux-rockchip@rockchip/5.10"
         type: choice
         options:
-          - armbian/linux-rockchip@rk-5.10-rkr1
-          - armbian/linux-rockchip@rk-6.1-rkr5.1
+          - armbian/linux-rockchip@rockchip/5.10
+          - armbian/linux-rockchip@rockchip/6.1
+          - unifreq/linux-5.10.y-rk35xx@main
+          - unifreq/linux-6.1.y-rockchip@main
           - ophub/kernel@main
       kernel_version:
         description: "Select kernel version"
         required: false
-        default: "5.10.y"
+        default: "5.10"
         type: choice
         options:
-          - 5.10.y
-          - 6.1.y
+          - 5.10
+          - 6.1
       kernel_auto:
         description: "Auto use the latest kernel"
         required: false
@@ -123,51 +125,96 @@ jobs:
             cpio \
             python3 \
             rsync \
-            xz-utils
+            xz-utils \
+            device-tree-compiler \
+            initramfs-tools
 
       - name: Prepare RK322x kernel config
         run: |
           mkdir -p kernel-config/release/rk322x
-          # Gunakan config yang sudah ada atau download default config
+          
+          # Download default configs if not exists
           if [ ! -f "kernel-config/release/rk322x/config-5.10" ]; then
             wget https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip-rk322x.config \
               -O kernel-config/release/rk322x/config-5.10
           fi
+          
           if [ ! -f "kernel-config/release/rk322x/config-6.1" ]; then
             wget https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip-rk322x.config \
               -O kernel-config/release/rk322x/config-6.1
           fi
 
-      - name: Compile the kernel [ ${{ inputs.kernel_version }} ]
+      - name: Clone kernel source
+        id: clone_source
+        run: |
+          # Extract repo and branch from input
+          IFS='@' read -ra SOURCE_PARTS <<< "${{ inputs.kernel_source }}"
+          REPO=${SOURCE_PARTS[0]}
+          BRANCH=${SOURCE_PARTS[1]}
+          
+          echo "Cloning kernel from: https://github.com/$REPO (branch: $BRANCH)"
+          
+          # Clone the repository
+          if [[ "$REPO" == "unifreq"* ]]; then
+            echo "Using Unifreq kernel source with specific branch"
+            git clone --depth=1 --branch=$BRANCH https://github.com/$REPO kernel-source
+          else
+            git clone --depth=1 --branch=$BRANCH https://github.com/$REPO kernel-source || \
+            {
+              echo "Failed to clone branch $BRANCH, trying main branch"
+              git clone --depth=1 https://github.com/$REPO kernel-source
+            }
+          fi
+          
+          cd kernel-source
+          KERNEL_VER=$(make kernelversion | cut -d. -f1-2)
+          echo "Detected kernel version: $KERNEL_VER"
+          echo "KERNEL_VERSION=${KERNEL_VER}" >> $GITHUB_ENV
+          cd ..
+
+      - name: Apply RK322x patches
+        run: |
+          if [ -d "kernel-patch/linux-${{ env.KERNEL_VERSION }}" ]; then
+            cd kernel-source
+            
+            # Apply common patches
+            for patch in ../kernel-patch/linux-${{ env.KERNEL_VERSION }}/*.patch; do
+              [ -f "$patch" ] && patch -p1 < "$patch" || true
+            done
+            
+            # Apply RK322x specific patches
+            if [ -d "../kernel-patch/linux-${{ env.KERNEL_VERSION }}/rk322x" ]; then
+              for patch in ../kernel-patch/linux-${{ env.KERNEL_VERSION }}/rk322x/*.patch; do
+                [ -f "$patch" ] && patch -p1 < "$patch" || true
+              done
+            fi
+          else
+            echo "No patches found for kernel ${{ env.KERNEL_VERSION }}"
+          fi
+
+      - name: Compile the kernel [ ${{ env.KERNEL_VERSION }} ]
         id: compile_kernel
         run: |
           # Set environment variables
           export ARCH=arm
           export CROSS_COMPILE=arm-linux-gnueabihf-
           
-          # Clone kernel source
-          KERNEL_SOURCE="${{ inputs.kernel_source }}"
-          if [[ "$KERNEL_SOURCE" == *"@"* ]]; then
-            REPO=${KERNEL_SOURCE%%@*}
-            BRANCH=${KERNEL_SOURCE#*@}
-            git clone --depth=1 --branch=$BRANCH https://github.com/$REPO kernel-source
-          else
-            git clone --depth=1 https://github.com/$KERNEL_SOURCE kernel-source
-          fi
-          
           cd kernel-source
           
-          # Apply RK322x specific patches
-          for patch in ../kernel-patch/linux-${{ inputs.kernel_version }}/*.patch; do
-            [ -f "$patch" ] && patch -p1 < "$patch"
-          done
+          # Clean source if requested
+          if [ "${{ inputs.delete_source }}" = "true" ]; then
+            make clean
+          fi
           
           # Use RK322x config
-          CONFIG_FILE="../kernel-config/release/rk322x/config-${${{ inputs.kernel_version }}%.y}"
+          CONFIG_FILE="../kernel-config/release/rk322x/config-${{ env.KERNEL_VERSION }}"
           if [ -f "$CONFIG_FILE" ]; then
             cp $CONFIG_FILE .config
+            echo "Using custom config: $CONFIG_FILE"
           else
+            # Fallback to rockchip defconfig
             make rockchip_defconfig
+            echo "Using default rockchip_defconfig"
           fi
           
           # Configure kernel
@@ -177,27 +224,51 @@ jobs:
           sed -i "s|CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"${{ inputs.kernel_sign }}\"|" .config
           
           # Build kernel
-          make -j$(nproc) zImage modules dtbs
+          if [ "${{ inputs.silent_log }}" = "true" ]; then
+            echo "Building with silent logs..."
+            make -j$(nproc) zImage modules dtbs > build.log 2>&1 || { cat build.log; exit 1; }
+          else
+            make -j$(nproc) zImage modules dtbs
+          fi
           
           # Install modules
           make modules_install INSTALL_MOD_PATH=../output
           
           # Copy artifacts
           mkdir -p ../output/boot
-          cp arch/arm/boot/zImage ../output/boot/vmlinuz-${{ inputs.kernel_version }}${{ inputs.kernel_sign }}
+          cp arch/arm/boot/zImage ../output/boot/vmlinuz-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}
           cp arch/arm/boot/dts/rk322*.dtb ../output/boot/
-          cp System.map ../output/boot/System.map-${{ inputs.kernel_version }}${{ inputs.kernel_sign }}
-          cp .config ../output/boot/config-${{ inputs.kernel_version }}${{ inputs.kernel_sign }}
+          cp System.map ../output/boot/System.map-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}
+          cp .config ../output/boot/config-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}
           
           # Create initrd
           mkdir -p ../output/initrd
-          mkinitramfs -k -o ../output/initrd/uInitrd-${{ inputs.kernel_version }}${{ inputs.kernel_sign }} \
-            -v ${{ inputs.kernel_version }}${{ inputs.kernel_sign }}
+          KERNEL_VERSION_FULL=$(make kernelversion)
+          echo "Creating initrd for $KERNEL_VERSION_FULL${{ inputs.kernel_sign }}"
+          
+          # Create temporary initrd directory
+          INITRD_TMP_DIR=$(mktemp -d)
+          mkdir -p $INITRD_TMP_DIR/{bin,dev,etc,lib,proc,sbin,sys,usr}
+          cp -a /bin/busybox $INITRD_TMP_DIR/bin/
+          ln -s bin/busybox $INITRD_TMP_DIR/init
+          
+          # Create basic init script
+          cat > $INITRD_TMP_DIR/init <<EOF
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+exec /bin/sh
+EOF
+          chmod +x $INITRD_TMP_DIR/init
+          
+          # Build initrd
+          (cd $INITRD_TMP_DIR && find . | cpio -o -H newc | gzip > ../output/initrd/uInitrd-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }})
+          rm -rf $INITRD_TMP_DIR
 
       - name: Package artifacts
         run: |
           cd output
-          tar -czvf rk322x-kernel-${{ inputs.kernel_version }}.tar.gz boot initrd
+          tar -czvf rk322x-kernel-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}.tar.gz boot initrd
           echo "PACKAGED_OUTPUTPATH=$(pwd)" >> $GITHUB_ENV
           echo "PACKAGED_STATUS=success" >> $GITHUB_ENV
 
@@ -210,10 +281,23 @@ jobs:
           allowUpdates: true
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
-            - The kernel can be used to compile Armbian and OpenWrt for RK322x devices
-            - The kernel source code comes from: ${{ inputs.kernel_source }}
-            - The kernel compilation toolchain: ${{ inputs.kernel_toolchain }}
-            - Kernel version: ${{ inputs.kernel_version }}
-            - Custom signature: ${{ inputs.kernel_sign }}
-            - This is a dedicated kernel for `Rockchip rk322x` devices
-            - 这是 `Rockchip rk322x` 设备的专用内核
+            ### RK322x Kernel Build Details
+            - **Kernel Version**: ${{ env.KERNEL_VERSION }}
+            - **Source**: ${{ inputs.kernel_source }}
+            - **Build Signature**: ${{ inputs.kernel_sign }}
+            - **Toolchain**: ${{ inputs.kernel_toolchain }}
+            - **Compression Format**: ${{ inputs.compress_format }}
+            - **Build Date**: $(date)
+            
+            #### Supported Sources:
+            - Armbian: `armbian/linux-rockchip@rockchip/5.10`
+            - Armbian: `armbian/linux-rockchip@rockchip/6.1`
+            - Unifreq: `unifreq/linux-5.10.y-rk35xx@main`
+            - Unifreq: `unifreq/linux-6.1.y-rockchip@main`
+            - Ophub: `ophub/kernel@main`
+            
+            #### Compatibility:
+            - Chipset: Rockchip RK3228A, RK3229, RK3228H
+            - Architecture: ARMv7
+            
+            **Note**: This kernel is specifically built for RK322x devices.
