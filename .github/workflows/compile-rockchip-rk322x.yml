@@ -20,7 +20,7 @@ on:
           - armbian/linux-rockchip@rk-6.1-rkr5.1  # Opsi baru untuk branch rk-6.1-rkr5.1
           - unifreq/linux-5.10.y-rk35xx@main
           - unifreq/linux-6.1.y-rockchip@main
-          - ophub/kernel@main
+          - pitekkate/kernel-rk322x@main
       kernel_version:
         description: "Select kernel version"
         required: false
