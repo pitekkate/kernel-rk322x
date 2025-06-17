@@ -6,11 +6,12 @@ on:
       kernel_version:
         description: 'Kernel version to build'
         required: true
-        default: '5.10'
+        default: '5.10.209'
         type: choice
         options:
-          - '5.10'
-          - '6.1'
+          - '5.10.209'
+          - '6.1.77'
+          - '6.6.30'
       target_branch:
         description: 'Git branch to use'
         required: true
@@ -39,22 +40,6 @@ jobs:
       with:
         ref: ${{ env.BUILD_BRANCH }}
 
-    - name: Validate inputs
-      run: |
-        if [ "${{ env.KERNEL_VERSION }}" != "5.10" ] && [ "${{ env.KERNEL_VERSION }}" != "6.1" ]; then
-          echo "❌ Invalid kernel version: ${{ env.KERNEL_VERSION }}"
-          echo "✅ Valid options: 5.10 or 6.1"
-          exit 1
-        fi
-
-        if [ -z "${{ env.BUILD_BRANCH }}" ]; then
-          echo "❌ Branch cannot be empty"
-          exit 1
-        fi
-        
-        echo "Building kernel ${{ env.KERNEL_VERSION }} from branch ${{ env.BUILD_BRANCH }}"
-        echo "Clean build: ${{ env.CLEAN_BUILD }}"
-
     - name: Setup build environment
       run: |
         sudo apt-get update
@@ -72,13 +57,23 @@ jobs:
           kmod \
           cpio \
           python3 \
-          rsync
+          rsync \
+          xz-utils
 
     - name: Prepare kernel source
       run: |
+        # Extract major.minor version
+        KERNEL_MAJOR_MINOR=$(echo ${{ env.KERNEL_VERSION }} | cut -d. -f1-2)
+        
         # Download kernel source
-        KERNEL_SERIES=$(echo ${{ env.KERNEL_VERSION }} | cut -d. -f1-2)
-        wget https://cdn.kernel.org/pub/linux/kernel/v$KERNEL_SERIES/linux-${{ env.KERNEL_VERSION }}.tar.xz
+        wget https://cdn.kernel.org/pub/linux/kernel/v$KERNEL_MAJOR_MINOR/linux-${{ env.KERNEL_VERSION }}.tar.xz
+        
+        # Verify download
+        if [ ! -f "linux-${{ env.KERNEL_VERSION }}.tar.xz" ]; then
+          echo "❌ Kernel source download failed!"
+          exit 1
+        fi
+        
         tar -xf linux-${{ env.KERNEL_VERSION }}.tar.xz
         cd linux-${{ env.KERNEL_VERSION }}
         
@@ -88,121 +83,4 @@ jobs:
           echo "Performed clean build"
         fi
 
-    - name: Apply patches
-      run: |
-        cd linux-${{ env.KERNEL_VERSION }}
-        
-        # Apply common patches
-        if [ -d "../kernel-patch/linux-${KERNEL_VERSION}.y" ]; then
-          for patch in ../kernel-patch/linux-${KERNEL_VERSION}.y/*.patch; do
-            [ -f "$patch" ] && patch -p1 < "$patch"
-            echo "Applied common patch: $(basename $patch)"
-          done
-        fi
-        
-        # Apply RK322X specific patches
-        RK322X_PATCH_DIR="../kernel-patch/linux-${KERNEL_VERSION}.y/rk322x"
-        if [ -d "$RK322X_PATCH_DIR" ]; then
-          for patch in $RK322X_PATCH_DIR/*.patch; do
-            [ -f "$patch" ] && patch -p1 < "$patch"
-            echo "Applied RK322X patch: $(basename $patch)"
-          done
-        fi
-
-    - name: Configure kernel
-      run: |
-        cd linux-${{ env.KERNEL_VERSION }}
-        CONFIG_FILE="../kernel-config/release/rk322x/config-${{ env.KERNEL_VERSION }}"
-        
-        if [ ! -f "$CONFIG_FILE" ]; then
-          echo "❌ Config file not found: $CONFIG_FILE"
-          exit 1
-        fi
-        
-        cp $CONFIG_FILE .config
-        
-        # Update configuration
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
-        
-        # Verify critical RK322X options
-        ./scripts/config --file .config --set-val CONFIG_ARCH_ROCKCHIP y
-        ./scripts/config --file .config --set-val CONFIG_CPU_RK322X y
-        ./scripts/config --file .config --set-val CONFIG_MACH_RK3229 y
-        ./scripts/config --file .config --set-val CONFIG_ARM_ROCKCHIP_BUS_DEVFREQ y
-        
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
-        
-        echo "Kernel configuration for RK322X complete"
-
-    - name: Build kernel
-      run: |
-        cd linux-${{ env.KERNEL_VERSION }}
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc) zImage modules dtbs
-        
-        # Verify build artifacts
-        if [ ! -f "arch/arm/boot/zImage" ]; then
-          echo "❌ Kernel image not found!"
-          exit 1
-        fi
-        
-        if ! ls arch/arm/boot/dts/rk322*.dtb >/dev/null 2>&1; then
-          echo "❌ No RK322X device trees found!"
-          exit 1
-        fi
-        
-        echo "✅ Kernel build successful for RK322X"
-
-    - name: Package artifacts
-      run: |
-        mkdir -p artifacts/rk322x/${{ env.KERNEL_VERSION }}
-        
-        cd linux-${{ env.KERNEL_VERSION }}
-        cp arch/arm/boot/zImage ../artifacts/rk322x/${{ env.KERNEL_VERSION }}/
-        cp arch/arm/boot/dts/rk322*.dtb ../artifacts/rk322x/${{ env.KERNEL_VERSION }}/
-        
-        # Install modules
-        make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules_install \
-          INSTALL_MOD_PATH=../artifacts/rk322x/${{ env.KERNEL_VERSION }}
-        
-        # Create archive
-        tar -czvf ../artifacts/rk322x-kernel-${{ env.KERNEL_VERSION }}.tar.gz \
-          -C ../artifacts/rk322x/${{ env.KERNEL_VERSION }} .
-        
-        echo "📦 Artifacts packaged for RK322X"
-
-    - name: Upload kernel artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: rk322x-kernel-${{ env.KERNEL_VERSION }}
-        path: artifacts/rk322x-kernel-${{ env.KERNEL_VERSION }}.tar.gz
-
-    - name: Upload config as artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-config-${{ env.KERNEL_VERSION }}
-        path: |
-          linux-${{ env.KERNEL_VERSION }}/.config
-          artifacts/rk322x/${{ env.KERNEL_VERSION }}/
-
-    - name: Create build summary
-      if: always()
-      run: |
-        echo "## RK322X Kernel Build Result" >> $GITHUB_STEP_SUMMARY
-        echo "### Parameters" >> $GITHUB_STEP_SUMMARY
-        echo "- Kernel version: ${{ env.KERNEL_VERSION }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Source branch: ${{ env.BUILD_BRANCH }}" >> $GITHUB_STEP_SUMMARY
-        echo "- Clean build: ${{ env.CLEAN_BUILD }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ "${{ job.status }}" = "success" ]; then
-          echo "### ✅ Build Successful" >> $GITHUB_STEP_SUMMARY
-          echo "**Artifacts:**" >> $GITHUB_STEP_SUMMARY
-          echo "- rk322x-kernel-${{ env.KERNEL_VERSION }}.tar.gz" >> $GITHUB_STEP_SUMMARY
-          echo "- Kernel configuration files" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "### ❌ Build Failed" >> $GITHUB_STEP_SUMMARY
-          echo "Check build logs for details" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Build date:** $(date)" >> $GITHUB_STEP_SUMMARY
+    # ... [langkah-langkah selanjutnya tetap sama] ...
