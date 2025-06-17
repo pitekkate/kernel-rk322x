@@ -334,15 +334,21 @@ jobs:
           chmod +x $INITRD_TMP_DIR/init
           
           # Build initrd with robust method
-          (cd $INITRD_TMP_DIR && find . -print0 | cpio --null -ov -H newc | gzip -9 > ../output/initrd/uInitrd-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }})
+          INITRD_OUTPUT_FILE="../output/initrd/uInitrd-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}"
+          echo "Creating initrd at: $INITRD_OUTPUT_FILE"
+          
+          # Create initrd without changing directory
+          (cd $INITRD_TMP_DIR && find . | cpio -o -H newc > initrd.cpio)
+          gzip -9 $INITRD_TMP_DIR/initrd.cpio
+          mv $INITRD_TMP_DIR/initrd.cpio.gz $INITRD_OUTPUT_FILE
           
           # Verify initrd creation
-          if [ ! -f "../output/initrd/uInitrd-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}" ]; then
-            echo "❌ Initrd creation failed!"
+          if [ ! -f "$INITRD_OUTPUT_FILE" ]; then
+            echo "❌ Initrd creation failed! File not found: $INITRD_OUTPUT_FILE"
             exit 1
           fi
           
-          echo "✅ Initrd created successfully"
+          echo "✅ Initrd created successfully: $(du -h $INITRD_OUTPUT_FILE)"
           rm -rf $INITRD_TMP_DIR
 
       - name: Package artifacts
