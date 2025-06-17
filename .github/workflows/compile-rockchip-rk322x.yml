@@ -1,3 +1,8 @@
+#==========================================================================
+# Description: Compile rockchip rk322x kernel
+# Copyright (C) 2023 https://github.com/ophub/kernel
+#==========================================================================
+
 name: Compile rockchip rk322x kernel
 
 on:
@@ -248,12 +253,12 @@ jobs:
           ln -s bin/busybox $INITRD_TMP_DIR/init
           
           # Create basic init script
-          cat > $INITRD_TMP_DIR/init <<EOF
+          cat > $INITRD_TMP_DIR/init <<'INIT_EOF'
 #!/bin/sh
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 exec /bin/sh
-EOF
+INIT_EOF
           chmod +x $INITRD_TMP_DIR/init
           
           # Build initrd
