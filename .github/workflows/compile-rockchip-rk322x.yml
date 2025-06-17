@@ -254,11 +254,11 @@ jobs:
           
           # Create basic init script
           cat > $INITRD_TMP_DIR/init <<'INIT_EOF'
-#!/bin/sh
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-exec /bin/sh
-INIT_EOF
+              #!/bin/sh
+              mount -t proc proc /proc
+              mount -t sysfs sysfs /sys
+              exec /bin/sh
+          INIT_EOF
           chmod +x $INITRD_TMP_DIR/init
           
           # Build initrd
