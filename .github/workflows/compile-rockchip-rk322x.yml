@@ -128,7 +128,8 @@ jobs:
             xz-utils \
             device-tree-compiler \
             initramfs-tools \
-            file
+            file \
+            libncurses5-dev
 
       - name: Prepare RK322x kernel config
         run: |
@@ -144,6 +145,13 @@ jobs:
             wget https://raw.githubusercontent.com/armbian/build/main/config/kernel/linux-rockchip-rk322x.config \
               -O kernel-config/release/rk322x/config-6.1
           fi
+          
+          # Ensure module support is enabled in configs
+          for config in kernel-config/release/rk322x/config-*; do
+            sed -i 's/^# CONFIG_MODULES is not set/CONFIG_MODULES=y/' $config
+            sed -i 's/^CONFIG_MODULES=.*/CONFIG_MODULES=y/' $config
+            echo "CONFIG_MODULE_UNLOAD=y" >> $config
+          done
 
       - name: Clone kernel source
         id: clone_source
@@ -255,8 +263,20 @@ jobs:
           # Configure kernel
           make olddefconfig
           
-          # Set custom kernel signature
-          sed -i "s|CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"${{ inputs.kernel_sign }}\"|" .config
+          # Enable critical options if not enabled
+          ./scripts/config --file .config --enable CONFIG_MODULES
+          ./scripts/config --file .config --enable CONFIG_MODULE_UNLOAD
+          ./scripts/config --file .config --enable CONFIG_BLK_DEV_INITRD
+          ./scripts/config --file .config --set-val CONFIG_LOCALVERSION "${{ inputs.kernel_sign }}"
+          
+          # Apply configuration changes
+          make olddefconfig
+          
+          # Verify module support
+          if ! grep -q "CONFIG_MODULES=y" .config; then
+            echo "❌ Module support is not enabled in kernel config!"
+            exit 1
+          fi
           
           # Build kernel
           if [ "${{ inputs.silent_log }}" = "true" ]; then
@@ -296,14 +316,10 @@ jobs:
           INITRD_TMP_DIR=$(mktemp -d)
           mkdir -p $INITRD_TMP_DIR/{bin,dev,etc,lib,proc,sbin,sys,usr}
           
-          # Copy busybox if available
-          if command -v busybox &> /dev/null; then
-            cp $(which busybox) $INITRD_TMP_DIR/bin/
-          else
-            echo "⚠️ busybox not found, installing..."
-            sudo apt-get install -y busybox-static
-            cp /bin/busybox $INITRD_TMP_DIR/bin/
-          fi
+          # Copy busybox
+          sudo apt-get install -y busybox-static
+          cp /bin/busybox $INITRD_TMP_DIR/bin/
+          ln -s bin/busybox $INITRD_TMP_DIR/init
           
           # Create init script
           cat > $INITRD_TMP_DIR/init <<'EOF'
