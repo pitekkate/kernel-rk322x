@@ -17,10 +17,10 @@ on:
         options:
           - armbian/linux-rockchip@rockchip/5.10
           - armbian/linux-rockchip@rockchip/6.1
-          - armbian/linux-rockchip@rk-6.1-rkr5.1  # Opsi baru untuk branch rk-6.1-rkr5.1
+          - armbian/linux-rockchip@rk-6.1-rkr5.1
           - unifreq/linux-5.10.y-rk35xx@main
           - unifreq/linux-6.1.y-rockchip@main
-          - pitekkate/kernel-rk322x@main
+          - ophub/kernel@main
       kernel_version:
         description: "Select kernel version"
         required: false
@@ -86,7 +86,7 @@ on:
           - -summer-growing
           - -autumn-harvesting
           - -winter-storing
-          - -kangris
+          - -yourname
       kernel_config:
         description: "Set the path of kernel .config"
         required: false
@@ -152,6 +152,7 @@ jobs:
             sed -i 's/^# CONFIG_MODULES is not set/CONFIG_MODULES=y/' $config
             sed -i 's/^CONFIG_MODULES=.*/CONFIG_MODULES=y/' $config
             echo "CONFIG_MODULE_UNLOAD=y" >> $config
+            echo "CONFIG_BLK_DEV_INITRD=y" >> $config
           done
 
       - name: Clone kernel source
@@ -332,8 +333,16 @@ jobs:
           
           chmod +x $INITRD_TMP_DIR/init
           
-          # Build initrd
-          (cd $INITRD_TMP_DIR && find . | cpio -o -H newc | gzip > ../output/initrd/uInitrd-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }})
+          # Build initrd with robust method
+          (cd $INITRD_TMP_DIR && find . -print0 | cpio --null -ov -H newc | gzip -9 > ../output/initrd/uInitrd-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }})
+          
+          # Verify initrd creation
+          if [ ! -f "../output/initrd/uInitrd-${{ env.KERNEL_VERSION }}${{ inputs.kernel_sign }}" ]; then
+            echo "❌ Initrd creation failed!"
+            exit 1
+          fi
+          
+          echo "✅ Initrd created successfully"
           rm -rf $INITRD_TMP_DIR
 
       - name: Package artifacts
